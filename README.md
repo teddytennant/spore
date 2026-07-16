@@ -2,7 +2,7 @@
 
 A minimal coding agent with one tool: **bash**. No approval gate. It edits code,
 runs builds and tests, uses git and curl, spawns subagents (`spore -p "task"`),
-and can rewrite and recompile its own source. ~270 lines of Rust, two
+and can rewrite and recompile its own source. ~350 lines of Rust, two
 dependencies.
 
 ## Install
