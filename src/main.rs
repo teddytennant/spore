@@ -1,6 +1,7 @@
 use std::env;
-use std::io::{self, BufRead, BufReader, Write};
-use std::process::Command;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -10,8 +11,9 @@ const MODEL: &str = "grok-4.5";
 const URL: &str = "https://api.x.ai/v1/chat/completions";
 const MAX_OUTPUT: usize = 40_000;
 const MAX_DEPTH: u32 = 4;
+const BASH_TIMEOUT: Duration = Duration::from_secs(300);
 
-const BASH: &str = "Run a bash command on the local machine and return its combined stdout and stderr. This is your only tool and it runs with no approval gate.";
+const BASH: &str = "Run a bash command on the local machine and return its combined stdout and stderr. This is your only tool and it runs with no approval gate. stdin is closed and the command is killed after 300 seconds, so run anything long-lived in the background (nohup … & ).";
 
 const USAGE: &str = "\
 spore: a single-tool (bash) terminal coding agent.
@@ -41,6 +43,7 @@ struct Spore {
     key_cmd: Option<String>,
     model: String,
     url: String,
+    home: String,
     depth: u32,
 }
 
@@ -71,6 +74,7 @@ fn main() {
         key_cmd,
         model: env_opt("SPORE_MODEL").unwrap_or_else(|| MODEL.into()),
         url: env_opt("SPORE_BASE_URL").unwrap_or_else(|| URL.into()),
+        home: env_opt("SPORE_HOME").unwrap_or_else(|| HOME.into()),
         depth,
     };
 
@@ -113,7 +117,14 @@ impl Spore {
 
     fn run(&self, msgs: &mut Vec<Value>, headless: bool) -> String {
         loop {
-            let (assistant, calls, text) = self.turn(msgs, headless);
+            let (assistant, calls, text) = match self.turn(msgs, headless) {
+                Ok(t) => t,
+                Err(e) if headless => die(e),
+                Err(e) => {
+                    eprintln!("spore: {e}");
+                    return String::new();
+                }
+            };
             msgs.push(assistant);
             if calls.is_empty() {
                 return text;
@@ -129,7 +140,12 @@ impl Spore {
         }
     }
 
-    fn turn(&self, msgs: &[Value], headless: bool) -> (Value, Vec<(String, String)>, String) {
+    #[allow(clippy::type_complexity)]
+    fn turn(
+        &self,
+        msgs: &[Value],
+        headless: bool,
+    ) -> Result<(Value, Vec<(String, String)>, String), String> {
         let mut all = vec![json!({"role": "system", "content": SYSTEM})];
         all.extend(msgs.iter().cloned());
         let body = json!({
@@ -147,16 +163,21 @@ impl Spore {
             }}],
         });
 
-        let resp = ureq::post(&self.url)
-            .set("authorization", &format!("Bearer {}", self.token()))
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_read(Duration::from_secs(120))
+            .build();
+        let resp = agent
+            .post(&self.url)
+            .set("authorization", &format!("Bearer {}", self.token()?))
             .set("content-type", "application/json")
             .send_string(&body.to_string());
         let resp = match resp {
             Ok(r) => r,
             Err(ureq::Error::Status(code, r)) => {
-                die(format!("api {code}: {}", r.into_string().unwrap_or_default()))
+                return Err(format!("api {code}: {}", r.into_string().unwrap_or_default()))
             }
-            Err(e) => die(e.to_string()),
+            Err(e) => return Err(e.to_string()),
         };
 
         let mut text = String::new();
@@ -219,46 +240,85 @@ impl Spore {
                 (id.clone(), cmd)
             })
             .collect();
-        (assistant, cmds, text)
+        Ok((assistant, cmds, text))
     }
 
     fn bash(&self, cmd: &str) -> String {
-        let out = Command::new("bash")
+        let child = Command::new("bash")
             .arg("-c")
             .arg(cmd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .env("SPORE_DEPTH", (self.depth + 1).to_string())
-            .env("SPORE_HOME", HOME)
-            .output();
-        let o = match out {
-            Ok(o) => o,
+            .env("SPORE_HOME", &self.home)
+            .spawn();
+        let mut child = match child {
+            Ok(c) => c,
             Err(e) => return format!("bash failed to start: {e}"),
         };
-        let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-        s.push_str(&String::from_utf8_lossy(&o.stderr));
-        let code = o.status.code().unwrap_or(-1);
-        if s.trim().is_empty() {
-            s = format!("(no output; exit {code})");
-        } else if code != 0 {
-            s.push_str(&format!("\n[exit {code}]"));
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+
+        let deadline = Instant::now() + BASH_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break Some(st),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+
+        let mut s = stdout.join().unwrap_or_default();
+        s.push_str(&stderr.join().unwrap_or_default());
+        match status {
+            None => s.push_str(&format!(
+                "\n[killed: timed out after {}s]",
+                BASH_TIMEOUT.as_secs()
+            )),
+            Some(st) => {
+                let code = st.code().unwrap_or(-1);
+                if s.trim().is_empty() {
+                    s = format!("(no output; exit {code})");
+                } else if code != 0 {
+                    s.push_str(&format!("\n[exit {code}]"));
+                }
+            }
         }
         truncate(s)
     }
 
-    fn token(&self) -> String {
+    fn token(&self) -> Result<String, String> {
         let Some(cmd) = &self.key_cmd else {
-            return self.key.clone().unwrap_or_default();
+            return Ok(self.key.clone().unwrap_or_default());
         };
         match Command::new("bash").arg("-c").arg(cmd).output() {
             Ok(o) if o.status.success() => {
                 let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if t.is_empty() {
-                    die("SPORE_API_KEY_CMD produced no token".into());
+                    return Err("SPORE_API_KEY_CMD produced no token".into());
                 }
-                t
+                Ok(t)
             }
-            _ => die("SPORE_API_KEY_CMD failed".into()),
+            _ => Err("SPORE_API_KEY_CMD failed".into()),
         }
     }
+}
+
+fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = r {
+            let _ = r.read_to_end(&mut buf);
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    })
 }
 
 fn emit(s: &str, headless: bool) {

@@ -13,6 +13,10 @@ One tool is not a constraint. A shell is the universal interface to a computer:
   `pytest`, …). Verify by running, not by assuming.
 - **Git and network.** `git`, `curl`, `gh`.
 
+Commands get no stdin and are killed after 300 seconds. Never run anything
+interactive (`vim`, bare `git rebase -i`); start servers and other long-lived
+processes in the background (`nohup … & `) and poll them.
+
 ## Subagents
 
 `spore` is on `PATH`, so you can run it from bash. Each call is a fresh headless

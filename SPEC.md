@@ -51,7 +51,7 @@ prompt.md ──include_str!──▶ system prompt
 | `SPORE_API_KEY_CMD` | (none) | command printing a fresh key each request (OAuth) |
 | `SPORE_MODEL` | `grok-4.5` | model id |
 | `SPORE_BASE_URL` | `api.x.ai/v1/chat/completions` | OpenAI-compatible endpoint |
-| `SPORE_HOME` | crate dir (build-time) | source tree for self-extension |
+| `SPORE_HOME` | crate dir (build-time) | source tree for self-extension; set it explicitly when installed via `cargo install --git` (the build-time dir is a deleted temp checkout) |
 | `SPORE_DEPTH` | `0` | subagent recursion depth (internal) |
 
 ## Non-goals
