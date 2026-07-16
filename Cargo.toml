@@ -1,6 +1,6 @@
 [package]
 name = "spore"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Minimal coding agent: one tool (bash)."
 license = "MIT"

@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl toolchain
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Smoke test
+        run: ./target/x86_64-unknown-linux-musl/release/spore -h
+        env:
+          SPORE_API_KEY: ci-smoke-test
+
+      - name: Checksum
+        run: |
+          cp target/x86_64-unknown-linux-musl/release/spore spore
+          sha256sum spore > spore.sha256
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            spore
+            spore.sha256
+          generate_release_notes: true

@@ -31,12 +31,13 @@ prompt.md ──include_str!──▶ system prompt
 ```
 
 - **Wire format:** OpenAI-compatible Chat Completions only, streamed over SSE.
-  Supported setups: xAI Grok with an API key (default), xAI Grok with OAuth
-  (`SPORE_API_KEY_CMD`), and an OpenAI endpoint via `SPORE_BASE_URL`.
+  Eight provider presets (xai, openai, anthropic, gemini, groq, deepseek,
+  openrouter, ollama) all speak it; any other endpoint works via
+  `SPORE_BASE_URL`.
 - **Loop:** call the model; run every bash call it asks for; feed the output back
   as `role: tool` messages; repeat until it asks for none.
-- **Auth:** a static key, or `SPORE_API_KEY_CMD` — a command run fresh per
-  request, so a refreshing OAuth token never goes stale.
+- **Auth:** a static key, `SPORE_API_KEY_CMD` (a command run fresh per request),
+  or a built-in xAI OAuth sign-in (see Configuration).
 - **Modes:** interactive line REPL, or headless (`-p`) for one-shot and subagent
   use. Headless streams progress to stderr and prints only the final answer to
   stdout, so a parent captures a clean result.
@@ -53,6 +54,22 @@ prompt.md ──include_str!──▶ system prompt
 | `SPORE_BASE_URL` | `api.x.ai/v1/chat/completions` | OpenAI-compatible endpoint |
 | `SPORE_HOME` | crate dir (build-time) | source tree for self-extension; set it explicitly when installed via `cargo install --git` (the build-time dir is a deleted temp checkout) |
 | `SPORE_DEPTH` | `0` | subagent recursion depth (internal) |
+
+Environment variables win, then `~/.config/spore/config` (same names as
+`KEY=value` lines), then compiled defaults. For auth, `SPORE_API_KEY_CMD`
+beats a static key, which beats OAuth.
+
+**Onboarding:** with no credentials configured, an interactive run drops into a
+setup wizard (also reachable via `spore login` or `/login` in the REPL): pick
+one of eight OpenAI-compatible providers, and either paste an API key (echo
+off, console page opened via `xdg-open`) or — for xAI — sign in with a Grok /
+X Premium subscription. The xAI path is a standard RFC 8628 device flow
+against `auth.x.ai` using the public grok-cli client: request a device code,
+open the verification URL in the browser, poll the token endpoint until
+approval. Tokens land in `~/.config/spore/oauth` (mode 0600); the access token
+(6 h) is auto-refreshed with a 120 s skew, and the rotating refresh token is
+re-persisted on every refresh. The resulting bearer is used against the normal
+chat-completions endpoint.
 
 ## Non-goals
 
